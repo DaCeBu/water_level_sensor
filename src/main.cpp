@@ -5,9 +5,9 @@
 
 #include "settings.h"
 
-#define echoPin 15 //13 // attach pin D13 Arduino to pin Echo of JSN-SR04T
-#define trigPin 27 //12 //attach pin D12 Arduino to pin Trig of JSN-SR04T
-#define LED_BUILTIN 13
+#define echoPin 19 //13 // attach pin D13 Arduino to pin Echo of JSN-SR04T
+#define trigPin 18 //12 //attach pin D12 Arduino to pin Trig of JSN-SR04T
+#define LED_BUILTIN 2
 
 #define uS_TO_S_FACTOR 1000000   /* Conversion factor for micro seconds to seconds */
 
@@ -196,13 +196,13 @@ void setup() {
   pinMode(echoPin, INPUT); // Sets the echoPin as an INPUT
   pinMode (LED_BUILTIN, OUTPUT);
 
-  Serial.begin(9600); // // Serial Communication is starting with 9600 of baud rate speed
+  Serial.begin(115200); // // Serial Communication is starting with 9600 of baud rate speed
   Serial.println("\nUltrasonic Sensor HC-SR04M Waterput"); // print some text in Serial Monitor
   Serial.println("Settings:");
   Serial.print("- heartbeat: ");
   Serial.println(settings.heartbeat);
   Serial.print("- time_to_sleep: ");
-  Serial.println(settings.time_to_sleep);
+ _ Serial.println(settings.time_to_sleep);
   Serial.print("- wifi_timeout: ");
   Serial.println(settings.wifi_timeout);
   Serial.print("- sensor_timeout: ");
