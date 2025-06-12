@@ -2,12 +2,19 @@
 #include <WiFi.h>
 #include "esp_wifi.h"
 #include <PubSubClient.h>
+#include <driver/adc.h> // Für erweiterte ADC-Konfiguration (optional, aber gut)
 
 #include "settings.h"
 
 #define echoPin 19 //13 // attach pin D13 Arduino to pin Echo of JSN-SR04T
 #define trigPin 18 //12 //attach pin D12 Arduino to pin Trig of JSN-SR04T
-#define LED_BUILTIN 2
+#define VOLTAGE_ENABLE_PIN 12   // GPIO zum Schalten des NPN-Transistors
+#define BATTERY_VOLTAGE_PIN 36  // GPIO für die ADC-Messung (ADC1_CHANNEL0)
+#define V_SCALE_FACTOR 2.0          // Skalierungsfaktor für den Spannungsteiler (R1=R2 -> 1:2)
+                                    // Wenn der Spannungsteiler z.B. 100k und 200k wäre: (100+200)/200 = 1.5
+#define ADC_MAX_READING 4095        // Maximaler Wert des 12-Bit ADC (2^12 - 1)
+#define ADC_REF_VOLTAGE 3.535         // Referenzspannung des ESP32 ADC (meist 3.3V)
+                                    // Kann variieren, für genaue Messung kalibrieren!
 
 #define uS_TO_S_FACTOR 1000000   /* Conversion factor for micro seconds to seconds */
 
@@ -20,6 +27,8 @@ RTC_DATA_ATTR struct  {
   int wifi_timeout = WIFI_TIMEOUT;
   int sensor_timeout = SENSOR_TIMEOUT;
 } settings;
+RTC_DATA_ATTR float battery_voltage_prev = 0.0; // Neu: Vorherige Batteriespannung
+
 
 WiFiClient wificlient;
 PubSubClient mqttclient(wificlient);
@@ -27,6 +36,33 @@ PubSubClient mqttclient(wificlient);
 bool done = false;
 byte msgBuf[64];
 uint32_t msgLen;
+
+// Function to convert ADC reading to voltage (before voltage divider scaling)
+float getVoltageFromADC(int adc_reading) {
+  return ((float)adc_reading / ADC_MAX_READING) * ADC_REF_VOLTAGE;
+}
+
+// --- Neue Funktion zur Batteriespannungsmessung ---
+float measureBatteryVoltage() {
+  // Transistor einschalten (Spannungsteiler mit Strom versorgen)
+  digitalWrite(VOLTAGE_ENABLE_PIN, HIGH);
+  delay(10); // Kurze Verzögerung, damit sich die Spannung stabilisiert
+
+  // ADC-Wert lesen
+  int adc_reading = analogRead(BATTERY_VOLTAGE_PIN);
+
+  // Transistor ausschalten (Leckstrom verhindern)
+  digitalWrite(VOLTAGE_ENABLE_PIN, LOW);
+
+  // ADC-Wert in Spannung umrechnen und Spannungsteiler-Faktor anwenden
+  float measured_voltage = getVoltageFromADC(adc_reading) * V_SCALE_FACTOR;
+
+  Serial.printf("Raw ADC reading (GPIO%d): %d\n", BATTERY_VOLTAGE_PIN, adc_reading);
+  Serial.printf("Measured Battery Voltage: %.2f V\n", measured_voltage);
+
+  return measured_voltage;
+}
+// --- Ende neue Funktion ---
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
   Serial.print("Received message on topic ");
@@ -202,7 +238,7 @@ void setup() {
   Serial.print("- heartbeat: ");
   Serial.println(settings.heartbeat);
   Serial.print("- time_to_sleep: ");
- _ Serial.println(settings.time_to_sleep);
+  Serial.println(settings.time_to_sleep);
   Serial.print("- wifi_timeout: ");
   Serial.println(settings.wifi_timeout);
   Serial.print("- sensor_timeout: ");
@@ -212,6 +248,20 @@ void setup() {
   ++bootCount;
   Serial.println("Boot number: " + String(bootCount));
 
+  // --- Initialisierung für Spannungsmessung ---
+  pinMode(VOLTAGE_ENABLE_PIN, OUTPUT);
+  digitalWrite(VOLTAGE_ENABLE_PIN, LOW); // Sicherstellen, dass Transistor aus ist
+  // ADC-Pin als Eingang konfigurieren (oft nicht explizit nötig, aber gute Praxis)
+  // Für GPIO36 (ADC1_CHANNEL0)
+  adc1_config_width(ADC_WIDTH_BIT_12); // 12-Bit Auflösung
+  adc1_config_channel_atten(ADC1_CHANNEL_0, ADC_ATTEN_DB_12); // Voller Bereich (0-3.3V)
+  // --- Ende Initialisierung Spannungsmessung ---
+
+  // --- Spannungsmessung durchführen ---
+  float current_battery_voltage = measureBatteryVoltage();
+  // --- Ende Spannungsmessung ---
+
+
   int distance = measure_distance();
   if ((distance != distance_prev && distance != 0) || // don't send if no change or invalid measurement
       (bootCount * settings.time_to_sleep) % settings.heartbeat == 0 || // but do send on heartbeat (even if invalid)
@@ -220,6 +270,15 @@ void setup() {
       Serial.print("Publishing to " MQTT_PUBLISH_TOPIC ": ");
       Serial.println(distance);
       mqttclient.publish(MQTT_PUBLISH_TOPIC, String(distance).c_str(), true);
+
+      // --- Batteriespannung als separates Topic veröffentlichen ---
+      char payload_batt[10];
+      dtostrf(current_battery_voltage, 1, 2, payload_batt); // 1 min width, 2 decimal places
+      Serial.print("Publishing to " MQTT_PUBLISH_VOLTAGE_TOPIC ": ");
+      Serial.println(payload_batt);
+      mqttclient.publish(MQTT_PUBLISH_VOLTAGE_TOPIC, payload_batt); // Neues Topic
+      Serial.printf("Published battery voltage to MQTT topic '%s': %s\n", MQTT_PUBLISH_VOLTAGE_TOPIC, payload_batt);
+      // --- Ende Batteriespannung veröffentlichen ---
 
       Serial.print("Subscribing to " MQTT_SETTINGS_TOPIC "/#...");
       if (mqttclient.subscribe(MQTT_SETTINGS_TOPIC "/#")) {
